@@ -1,0 +1,579 @@
+---
+title: "Data Preparation"
+author: Ian Christiansen
+course: IS 6850-004
+date: 6 February 2026
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+
+---
+
+## Overview
+This file contains my data preparation and feature engineering work for the Kaggle "Home Credit Default Risk" project. The main goal of this assignment is to take what I found during EDA and turn it into a repeatable preprocessing pipeline that I can apply to both the training and test datasets.
+
+Since the model will eventually be trained on the training set but scored on the test set, it is important that the same exact transformations are applied to both datasets. This helps prevent inconsistent results and avoids data leakage (for example, using information from the test data when creating features or imputing missing values).
+
+The main tasks completed in this script include:
+
+- Fixing known issues in the application data (such as the `DAYS_EMPLOYED = 365243` placeholder value)
+- Handling missing values in key variables like `EXT_SOURCE_1`, `EXT_SOURCE_2`, and `EXT_SOURCE_3`
+- Creating updated demographic variables (ex: age and employment duration in years instead of negative days)
+- Adding financial ratio features such as credit-to-income, annuity-to-income, and other common affordability ratios
+- Creating missing value indicator variables, since missingness itself can be predictive
+- Creating some binned and interaction-style features when appropriate
+- Aggregating supplemental datasets (bureau, previous applications, and installment payments) to the applicant level (`SK_ID_CURR`)
+- Joining those aggregated features back into the main application dataset
+- Making sure train and test end up with the same feature columns (except for `TARGET`)
+
+All functions are written so they can be reused for both training and test data, and any values used for imputation or thresholds are calculated from the training data only and then reused on the test data.
+
+## Setup
+```{r}
+library(tidyverse)
+library(janitor)
+```
+
+
+## Load datasets
+```{r}
+application_train <- readr::read_csv("application_train.csv", show_col_types = FALSE)
+application_test  <- readr::read_csv("application_test.csv", show_col_types = FALSE)
+
+bureau <- readr::read_csv("bureau.csv", show_col_types = FALSE)
+previous_application <- readr::read_csv("previous_application.csv", show_col_types = FALSE)
+installments_payments <- readr::read_csv("installments_payments.csv", show_col_types = FALSE)
+
+bureau_balance <- readr::read_csv("bureau_balance.csv", show_col_types = FALSE)
+pos_cash_balance <- readr::read_csv("POS_CASH_balance.csv", show_col_types = FALSE)
+credit_card_balance <- readr::read_csv("credit_card_balance.csv", show_col_types = FALSE)
+```
+
+
+## Confirm files loaded correctly
+```{r}
+dim(application_train)
+dim(application_test)
+
+dim(bureau)
+dim(previous_application)
+dim(installments_payments)
+```
+
+
+## 1) Clean + transform application data (train + test)
+Fix known anomaly: DAYS_EMPLOYED == 365243
+```{r}
+# In the Home Credit data, DAYS_EMPLOYED sometimes equals 365243.
+fix_days_employed_anomaly <- function(df) {
+  df %>%
+    mutate(DAYS_EMPLOYED = na_if(DAYS_EMPLOYED, 365243))
+}
+```
+
+#Convert day-based demographics into years
+```{r}
+# DAYS_BIRTH and DAYS_EMPLOYED are stored as negative days.
+# Converting to years makes them easier to interpret and use later.
+add_demographic_features <- function(df) {
+  df %>%
+    mutate(
+      AGE_YEARS = abs(DAYS_BIRTH) / 365,
+      EMPLOYED_YEARS = abs(DAYS_EMPLOYED) / 365
+    )
+}
+```
+
+#Create missingness indicators for EXT_SOURCE
+```{r}
+# EXT_SOURCE variables are strong predictors but have missing values.
+# I’m adding flags so the model can “see” whether the value was missing originally.
+add_ext_source_missing_flags <- function(df) {
+  df %>%
+    mutate(
+      EXT_SOURCE_1_MISSING = ifelse(is.na(EXT_SOURCE_1), 1, 0),
+      EXT_SOURCE_2_MISSING = ifelse(is.na(EXT_SOURCE_2), 1, 0),
+      EXT_SOURCE_3_MISSING = ifelse(is.na(EXT_SOURCE_3), 1, 0)
+    )
+}
+```
+
+#“Fit” imputation values using TRAIN only
+```{r}
+# Important: I compute medians using TRAIN only.
+# Then I reuse those same values on both train + test.
+fit_ext_source_imputer <- function(train_df) {
+  list(
+    med1 = median(train_df$EXT_SOURCE_1, na.rm = TRUE),
+    med2 = median(train_df$EXT_SOURCE_2, na.rm = TRUE),
+    med3 = median(train_df$EXT_SOURCE_3, na.rm = TRUE)
+  )
+}
+```
+
+#Apply the train-based medians to any dataset
+```{r}
+apply_ext_source_imputer <- function(df, imputer) {
+  df %>%
+    mutate(
+      EXT_SOURCE_1 = ifelse(is.na(EXT_SOURCE_1), imputer$med1, EXT_SOURCE_1),
+      EXT_SOURCE_2 = ifelse(is.na(EXT_SOURCE_2), imputer$med2, EXT_SOURCE_2),
+      EXT_SOURCE_3 = ifelse(is.na(EXT_SOURCE_3), imputer$med3, EXT_SOURCE_3)
+    )
+}
+```
+
+#Apply Task 1 steps to BOTH train + test in a consistent order
+```{r}
+# Step order matters:
+# 1) fix anomaly
+# 2) create missing flags (needs original NAs)
+# 3) create demographic features
+application_train <- application_train %>%
+  fix_days_employed_anomaly() %>%
+  add_ext_source_missing_flags() %>%
+  add_demographic_features()
+
+application_test <- application_test %>%
+  fix_days_employed_anomaly() %>%
+  add_ext_source_missing_flags() %>%
+  add_demographic_features()
+
+# Now impute EXT_SOURCE using medians learned from TRAIN only
+ext_imp <- fit_ext_source_imputer(application_train)
+
+application_train <- apply_ext_source_imputer(application_train, ext_imp)
+application_test  <- apply_ext_source_imputer(application_test, ext_imp)
+```
+
+
+```{r}
+# Check: placeholder value should be gone
+sum(application_train$DAYS_EMPLOYED == 365243, na.rm = TRUE)
+sum(application_test$DAYS_EMPLOYED == 365243, na.rm = TRUE)
+
+# Check: EXT_SOURCE should have no missing values anymore
+colSums(is.na(application_train %>% select(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)))
+colSums(is.na(application_test %>% select(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)))
+
+# Check: new columns exist
+c("AGE_YEARS", "EMPLOYED_YEARS") %in% names(application_train)
+c("AGE_YEARS", "EMPLOYED_YEARS") %in% names(application_test)
+
+c("EXT_SOURCE_1_MISSING","EXT_SOURCE_2_MISSING","EXT_SOURCE_3_MISSING") %in% names(application_train)
+c("EXT_SOURCE_1_MISSING","EXT_SOURCE_2_MISSING","EXT_SOURCE_3_MISSING") %in% names(application_test)
+```
+
+
+## 2) Create engineered features from the application train dataset
+In this task, I engineered additional features that could improve predictive performance. I focused on creating useful ratios (credit/income, annuity/income, etc.), missing value flags, binned variables, and a few interaction terms. These are common feature engineering strategies in credit risk modeling because they help capture financial stress and nonlinear effects.
+
+#Financial Ratio Features
+```{r}
+# These ratio features are commonly used in credit risk modeling
+# because they capture "affordability" and how risky the loan looks.
+
+add_financial_ratios <- function(df) {
+  df %>%
+    mutate(
+      CREDIT_TO_INCOME = AMT_CREDIT / AMT_INCOME_TOTAL,
+      ANNUITY_TO_INCOME = AMT_ANNUITY / AMT_INCOME_TOTAL,
+      CREDIT_TO_ANNUITY = AMT_CREDIT / AMT_ANNUITY,
+      ANNUITY_TO_CREDIT = AMT_ANNUITY / AMT_CREDIT,
+      GOODS_TO_CREDIT = AMT_GOODS_PRICE / AMT_CREDIT,
+      LOAN_TO_VALUE = AMT_CREDIT / AMT_GOODS_PRICE,
+      GOODS_TO_INCOME = AMT_GOODS_PRICE / AMT_INCOME_TOTAL,
+      EMPLOYED_TO_AGE = EMPLOYED_YEARS / AGE_YEARS,
+      
+      # Per-person ratios (helps adjust for household size)
+      INCOME_PER_PERSON = AMT_INCOME_TOTAL / CNT_FAM_MEMBERS,
+      CREDIT_PER_PERSON = AMT_CREDIT / CNT_FAM_MEMBERS,
+      ANNUITY_PER_PERSON = AMT_ANNUITY / CNT_FAM_MEMBERS
+    )
+}
+```
+
+#Handle Infinite / NaN Values Created by Ratios
+```{r}
+# Some ratio calculations may create Inf or NaN values (ex: divide by 0 or NA).
+# This replaces those with NA so the dataset stays clean.
+clean_ratio_values <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric),
+                  ~ ifelse(is.infinite(.x) | is.nan(.x), NA, .x)))
+}
+```
+
+#Add More Missing Value Indicators
+```{r}
+add_missing_flags <- function(df) {
+  df %>%
+    mutate(
+      AMT_ANNUITY_MISSING = ifelse(is.na(AMT_ANNUITY), 1, 0),
+      AMT_GOODS_PRICE_MISSING = ifelse(is.na(AMT_GOODS_PRICE), 1, 0),
+      AMT_CREDIT_MISSING = ifelse(is.na(AMT_CREDIT), 1, 0),
+      AMT_INCOME_TOTAL_MISSING = ifelse(is.na(AMT_INCOME_TOTAL), 1, 0),
+
+      EXT_SOURCE_1_MISSING = ifelse(is.na(EXT_SOURCE_1), 1, 0),
+      EXT_SOURCE_2_MISSING = ifelse(is.na(EXT_SOURCE_2), 1, 0),
+      EXT_SOURCE_3_MISSING = ifelse(is.na(EXT_SOURCE_3), 1, 0)
+    )
+}
+```
+
+#Create Binned Variables (Age + Employment)
+```{r}
+# Binning helps capture nonlinear relationships.
+# Age and employment duration likely do not have a perfectly linear effect on default risk.
+
+add_binned_features <- function(df) {
+  df %>%
+    mutate(
+      AGE_BIN = case_when(
+        AGE_YEARS < 25 ~ "Under 25",
+        AGE_YEARS < 35 ~ "25-34",
+        AGE_YEARS < 45 ~ "35-44",
+        AGE_YEARS < 55 ~ "45-54",
+        AGE_YEARS < 65 ~ "55-64",
+        TRUE ~ "65+"
+      ),
+      
+      EMPLOYED_BIN = case_when(
+        is.na(EMPLOYED_YEARS) ~ "Missing",
+        EMPLOYED_YEARS < 1 ~ "<1 year",
+        EMPLOYED_YEARS < 5 ~ "1-4 years",
+        EMPLOYED_YEARS < 10 ~ "5-9 years",
+        EMPLOYED_YEARS < 20 ~ "10-19 years",
+        TRUE ~ "20+ years"
+      )
+    )
+}
+```
+
+#Interaction Features
+```{r}
+# Interaction terms can help capture risk patterns that only appear when
+# multiple factors combine (ex: high credit AND low income).
+
+add_interaction_features <- function(df) {
+  df %>%
+    mutate(
+      CREDIT_X_EXTSOURCE1 = AMT_CREDIT * EXT_SOURCE_1,
+      CREDIT_X_EXTSOURCE2 = AMT_CREDIT * EXT_SOURCE_2,
+      CREDIT_X_EXTSOURCE3 = AMT_CREDIT * EXT_SOURCE_3,
+
+      INCOME_X_EXTSOURCE2 = AMT_INCOME_TOTAL * EXT_SOURCE_2,
+      CREDIT_X_INCOME = AMT_CREDIT * AMT_INCOME_TOTAL,
+
+      ANNUITY_X_EMPLOYED = AMT_ANNUITY * EMPLOYED_YEARS,
+      CREDIT_TO_INCOME_X_EXTSOURCE2 = CREDIT_TO_INCOME * EXT_SOURCE_2
+    )
+}
+```
+
+#Apply Task 2 Feature Engineering to Train + Test
+```{r}
+# Applying feature engineering consistently to both datasets is important
+# so the model sees the same columns in train and test.
+
+application_train <- application_train %>%
+  add_financial_ratios() %>%
+  clean_ratio_values() %>%
+  add_missing_flags() %>%
+  add_binned_features() %>%
+  add_interaction_features()
+
+application_test <- application_test %>%
+  add_financial_ratios() %>%
+  clean_ratio_values() %>%
+  add_missing_flags() %>%
+  add_binned_features() %>%
+  add_interaction_features()
+```
+
+#Quick checks to confirm new features exist
+```{r}
+head(application_train %>% 
+       select(CREDIT_TO_INCOME, ANNUITY_TO_INCOME, CREDIT_TO_ANNUITY))
+
+table(application_train$AGE_BIN, useNA = "ifany")
+table(application_train$EMPLOYED_BIN, useNA = "ifany")
+
+# Check if any Inf values still exist
+sum(is.infinite(as.matrix(application_train %>% select(where(is.numeric)))), na.rm = TRUE)
+
+sum(is.nan(as.matrix(application_train %>% select(where(is.numeric)))), na.rm = TRUE)
+```
+
+These engineered features help represent borrower financial burden (ratios like credit-to-income and annuity-to-income), capture missingness patterns, and allow nonlinear effects through bins. I also added interaction features involving EXT_SOURCE variables since these were strong predictors in the EDA. All transformations were applied consistently to both training and test datasets.
+
+
+## 3) Aggregate supplementary data to the applicant level (SK_ID_CURR):
+
+```{r}
+#These files have multiple rows per applicant.
+#Goal is to aggregate them to ONE row per SK_ID_CURR.
+
+bureau <- read_csv("bureau.csv")
+previous_application <- read_csv("previous_application.csv")
+installments_payments <- read_csv("installments_payments.csv")
+
+# Quick check
+glimpse(bureau)
+glimpse(previous_application)
+glimpse(installments_payments)
+```
+
+
+```{r}
+# bureau.csv contains multiple bureau records per applicant.
+# Summarize it into one row per SK_ID_CURR with useful credit history features.
+
+bureau_agg <- bureau %>%
+  group_by(SK_ID_CURR) %>%
+  summarise(
+    bureau_records = n(),
+
+    bureau_active_cnt = sum(CREDIT_ACTIVE == "Active", na.rm = TRUE),
+    bureau_closed_cnt = sum(CREDIT_ACTIVE == "Closed", na.rm = TRUE),
+
+    bureau_credit_sum = sum(AMT_CREDIT_SUM, na.rm = TRUE),
+    bureau_debt_sum = sum(AMT_CREDIT_SUM_DEBT, na.rm = TRUE),
+    bureau_overdue_sum = sum(AMT_CREDIT_SUM_OVERDUE, na.rm = TRUE),
+
+    bureau_credit_mean = mean(AMT_CREDIT_SUM, na.rm = TRUE),
+    bureau_debt_mean = mean(AMT_CREDIT_SUM_DEBT, na.rm = TRUE),
+
+    # Debt ratio feature (avoids dividing by zero)
+    bureau_debt_to_credit = bureau_debt_sum / ifelse(bureau_credit_sum == 0, NA, bureau_credit_sum),
+
+    .groups = "drop"
+  )
+
+# after aggregation, there should be no duplicates of SK_ID_CURR
+stopifnot(anyDuplicated(bureau_agg$SK_ID_CURR) == 0)
+
+# Quick check
+glimpse(bureau_agg)
+head(bureau_agg)
+```
+
+
+```{r}
+# previous_application.csv contains multiple loan application records per applicant.
+# The goal is to summarize it into one row per SK_ID_CURR with useful features.
+
+previous_agg <- previous_application %>%
+  group_by(SK_ID_CURR) %>%
+  summarise(
+    prev_app_count = n(),
+    
+    # Approval / refusal history
+    prev_approved_cnt = sum(NAME_CONTRACT_STATUS == "Approved", na.rm = TRUE),
+    prev_refused_cnt  = sum(NAME_CONTRACT_STATUS == "Refused", na.rm = TRUE),
+    
+    # Approval rate (avoid dividing by zero)
+    prev_approval_rate = prev_approved_cnt / ifelse(prev_app_count == 0, NA, prev_app_count),
+    
+    # Financial summaries
+    prev_amt_credit_mean = mean(AMT_CREDIT, na.rm = TRUE),
+    prev_amt_credit_sum  = sum(AMT_CREDIT, na.rm = TRUE),
+    
+    prev_amt_annuity_mean = mean(AMT_ANNUITY, na.rm = TRUE),
+    prev_amt_annuity_sum  = sum(AMT_ANNUITY, na.rm = TRUE),
+    
+    prev_amt_application_mean = mean(AMT_APPLICATION, na.rm = TRUE),
+    
+    # Difference between requested vs granted credit
+    prev_credit_minus_application_mean = mean(AMT_CREDIT - AMT_APPLICATION, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+# After aggregation, there should be NO duplicates of SK_ID_CURR
+stopifnot(anyDuplicated(previous_agg$SK_ID_CURR) == 0)
+
+# Quick check
+glimpse(previous_agg)
+head(previous_agg)
+```
+
+
+```{r}
+# installments_payments.csv contains multiple payment records per applicant.
+# Summarize into one row per SK_ID_CURR with useful payment behavior features.
+
+installments_agg <- installments_payments %>%
+  mutate(
+    late_flag = ifelse(DAYS_ENTRY_PAYMENT > DAYS_INSTALMENT, 1, 0),
+    days_late = pmax(DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT, 0)
+  ) %>%
+  group_by(SK_ID_CURR) %>%
+  summarise(
+    inst_records = n(),
+
+    late_payment_cnt = sum(late_flag, na.rm = TRUE),
+    late_payment_pct = mean(late_flag, na.rm = TRUE),
+
+    avg_days_late = mean(days_late, na.rm = TRUE),
+    max_days_late = max(days_late, na.rm = TRUE),
+
+    payment_amt_mean = mean(AMT_PAYMENT, na.rm = TRUE),
+    payment_amt_sum = sum(AMT_PAYMENT, na.rm = TRUE),
+
+    instalment_amt_mean = mean(AMT_INSTALMENT, na.rm = TRUE),
+    instalment_amt_sum = sum(AMT_INSTALMENT, na.rm = TRUE),
+
+    payment_minus_instalment_mean = mean(AMT_PAYMENT - AMT_INSTALMENT, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+# after aggregation, there should be no duplicates of SK_ID_CURR
+stopifnot(anyDuplicated(installments_agg$SK_ID_CURR) == 0)
+
+# Quick check
+glimpse(installments_agg)
+head(installments_agg)
+```
+
+
+```{r}
+# Merge all aggregated supplementary datasets back into application_train.
+# Left_join keeps every applicant in application_train, even if they have no bureau/history records.
+
+application_train_enriched <- application_train %>%
+  left_join(bureau_agg, by = "SK_ID_CURR") %>%
+  left_join(previous_agg, by = "SK_ID_CURR") %>%
+  left_join(installments_agg, by = "SK_ID_CURR")
+
+# Quick check
+dim(application_train_enriched)
+glimpse(application_train_enriched)
+```
+
+
+```{r}
+# Check that SK_ID_CURR is still unique after joining
+stopifnot(anyDuplicated(application_train_enriched$SK_ID_CURR) == 0)
+
+# Confirm key aggregated columns exist
+application_train_enriched %>%
+  select(SK_ID_CURR, bureau_records, prev_app_count, inst_records) %>%
+  head()
+
+# Check how many missing values were created from joins (expected if applicant had no history)
+application_train_enriched %>%
+  summarise(
+    pct_missing_bureau = mean(is.na(bureau_records)),
+    pct_missing_prev = mean(is.na(prev_app_count)),
+    pct_missing_inst = mean(is.na(inst_records))
+  )
+```
+
+
+## 4) Join aggregated features to the application data:
+```{r}
+# Apply the same joins to application_test so train and test have the same features
+
+application_test_enriched <- application_test %>%
+  left_join(bureau_agg, by = "SK_ID_CURR") %>%
+  left_join(previous_agg, by = "SK_ID_CURR") %>%
+  left_join(installments_agg, by = "SK_ID_CURR")
+
+# Quick checks
+dim(application_test_enriched)
+glimpse(application_test_enriched)
+```
+
+
+```{r}
+# Replace original datasets with enriched versions
+# so the rest of the notebook uses the new engineered features
+
+application_train <- application_train_enriched
+application_test  <- application_test_enriched
+
+# Quick final check
+dim(application_train)
+dim(application_test)
+```
+
+#Task 3 & 4 Summary
+In this step, I aggregated the supplementary datasets (bureau, previous_application, and installments_payments) so each applicant (SK_ID_CURR) has one row of summary features. I then merged these aggregated features back into both the training and test datasets using left_join() to keep the same columns in both. Finally, I verified that SK_ID_CURR remained unique and checked missingness created from applicants with no prior history.
+
+
+## 5) Ensure train/test consistency:
+```{r}
+#Store train-based values so we reuse them for test (avoid data leakage)
+
+train_medians <- application_train %>%
+  summarise(
+    EXT_SOURCE_1_med = median(EXT_SOURCE_1, na.rm = TRUE),
+    EXT_SOURCE_2_med = median(EXT_SOURCE_2, na.rm = TRUE),
+    EXT_SOURCE_3_med = median(EXT_SOURCE_3, na.rm = TRUE)
+  )
+
+train_medians
+```
+
+
+```{r}
+# Function that applies the train medians to fill missing EXT_SOURCE values
+
+fill_ext_sources <- function(df, medians) {
+  df %>%
+    mutate(
+      EXT_SOURCE_1 = ifelse(is.na(EXT_SOURCE_1), medians$EXT_SOURCE_1_med, EXT_SOURCE_1),
+      EXT_SOURCE_2 = ifelse(is.na(EXT_SOURCE_2), medians$EXT_SOURCE_2_med, EXT_SOURCE_2),
+      EXT_SOURCE_3 = ifelse(is.na(EXT_SOURCE_3), medians$EXT_SOURCE_3_med, EXT_SOURCE_3)
+    )
+}
+```
+
+
+```{r}
+# Apply train-based medians to both datasets
+
+application_train <- fill_ext_sources(application_train, train_medians)
+application_test  <- fill_ext_sources(application_test, train_medians)
+
+# Quick check: EXT_SOURCE missing values should now be gone (or reduced)
+application_train %>%
+  summarise(
+    missing_ext1 = mean(is.na(EXT_SOURCE_1)),
+    missing_ext2 = mean(is.na(EXT_SOURCE_2)),
+    missing_ext3 = mean(is.na(EXT_SOURCE_3))
+  )
+
+application_test %>%
+  summarise(
+    missing_ext1 = mean(is.na(EXT_SOURCE_1)),
+    missing_ext2 = mean(is.na(EXT_SOURCE_2)),
+    missing_ext3 = mean(is.na(EXT_SOURCE_3))
+  )
+```
+
+
+```{r}
+# Final consistency check: train/test should have the same feature columns (except TARGET)
+
+train_cols <- setdiff(names(application_train), "TARGET")
+test_cols <- names(application_test)
+
+setdiff(train_cols, test_cols)   # should return character(0)
+setdiff(test_cols, train_cols)   # should return character(0)
+```
+
+
+
+
