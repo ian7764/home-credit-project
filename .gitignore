@@ -1,0 +1,14 @@
+# Rendered outputs
+*.html
+*_files/
+
+# Kaggle submissions
+submission.csv
+
+# Python
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.jupyter_cache/
+.quarto/
+.Rproj.user
