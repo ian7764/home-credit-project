@@ -1,0 +1,664 @@
+---
+title: "Kaggle Home Credit Default Risk - Modeling"
+author: Ian Christiansen
+course: IS 6850-004
+date: 21 February 2026
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+---
+
+```{python}
+import os
+
+print("Current working directory:", os.getcwd())
+
+print("application_train.csv exists:", os.path.exists("application_train.csv"))
+print("application_test.csv exists:", os.path.exists("application_test.csv"))
+```
+
+
+# Load Training and Test Data
+Loading the main train and test datasets.
+```{python}
+import pandas as pd
+import numpy as np
+
+train = pd.read_csv("application_train.csv")
+test  = pd.read_csv("application_test.csv")
+
+print("Train shape:", train.shape)
+print("Test shape:", test.shape)
+
+print("TARGET in train:", "TARGET" in train.columns)
+print("TARGET in test:", "TARGET" in test.columns)
+```
+
+
+
+Checking the default rate to understand class imbalance.
+```{python}
+default_rate = train["TARGET"].mean()
+
+print("Default rate:", default_rate)
+print(train["TARGET"].value_counts(normalize=True))
+```
+
+
+```{python}
+# --- Setup objects used across the notebook (render-safe) ---
+from sklearn.model_selection import train_test_split, StratifiedKFold
+
+df_sample, _ = train_test_split(
+    train,
+    train_size=50000,
+    stratify=train["TARGET"],
+    random_state=42
+)
+
+X_sample = df_sample.drop(columns=["TARGET"])
+y_sample = df_sample["TARGET"].astype(int)
+
+cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+```
+
+
+## 1. Establish performance Benchmark
+Baseline majority-class accuracy.
+```{python}
+y = train["TARGET"].astype(int)
+
+pos_rate = y.mean()
+majority_acc = max(pos_rate, 1 - pos_rate)
+
+print("Positive rate (default rate):", round(pos_rate, 4))
+print("Majority-class accuracy:", round(majority_acc, 4))
+print("No-skill AUC:", 0.5)
+```
+
+
+# Logistic Regression Baseline (3-Fold CV AUC)
+Using logistic regression as my first real benchmark model. I will evaluate performance using 3-fold cross-validated ROC AUC, since accuracy alone is misleading due to class imbalance.
+```{python}
+import numpy as np
+
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+```
+
+
+# Split features and target
+```{python}
+X = train.drop(columns=["TARGET"])
+y = train["TARGET"].astype(int)
+
+print("Feature matrix shape:", X.shape)
+print("Target vector shape:", y.shape)
+```
+
+
+Now we need to tell sklearn which columns are numeric vs categorical, and set up the preprocessing (impute missing values + one-hot encode categoricals).
+```{python}
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+
+# Identify numeric vs categorical columns
+num_cols = X.select_dtypes(include=[np.number]).columns
+cat_cols = X.select_dtypes(exclude=[np.number]).columns
+
+print("Number of numeric columns:", len(num_cols))
+print("Number of categorical columns:", len(cat_cols))
+
+# Preprocessing: impute missing values + one-hot encode categoricals
+preprocess = ColumnTransformer(
+    transformers=[
+        ("num", SimpleImputer(strategy="median"), num_cols),
+        ("cat", Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("ohe", OneHotEncoder(handle_unknown="ignore"))
+        ]), cat_cols)
+    ]
+)
+```
+
+
+```{python}
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+
+model = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", LogisticRegression(
+        solver="saga",
+        max_iter=5000,
+        n_jobs=-1
+    ))
+])
+```
+
+
+To make training faster while still getting a realistic estimate, I run 3-fold cross-validation on a stratified 50,000-row sample of the training data. I use ROC AUC since the target variable is imbalanced.
+```{python}
+#| eval: false
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+
+# Stratified 50k sample for CV (fast + realistic)
+df_sample, _ = train_test_split(
+    train,
+    train_size=50000,
+    stratify=train["TARGET"],
+    random_state=42
+)
+
+X_sample = df_sample.drop(columns=["TARGET"])
+y_sample = df_sample["TARGET"].astype(int)
+
+cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+print("Running 3-fold CV on 50k sample...")
+
+auc_scores = cross_val_score(
+    model,
+    X_sample,
+    y_sample,
+    scoring="roc_auc",
+    cv=cv,
+    n_jobs=-1   # <- use all cores
+)
+
+print("Logistic Regression 3-Fold CV AUC (mean):", round(auc_scores.mean(), 4))
+print("Logistic Regression 3-Fold CV AUC (std):", round(auc_scores.std(), 4))
+```
+The logistic regression model achieved a mean ROC AUC of 0.6225 with a very small standard deviation across folds (0.0051). This suggests the model is fairly stable but only has moderate predictive power. Since this is a basic benchmark model with minimal feature engineering, the performance is reasonable and provides a baseline to improve upon with more advanced models.
+
+
+
+I used logistic regression as a baseline model and kept it inside a preprocessing pipeline so the data cleaning and encoding happen automatically. Since the dataset is imbalanced, I used `class_weight="balanced"` to account for that. I also increased the max iterations to help the model converge.
+```{python}
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+
+model = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", LogisticRegression(
+        solver="saga",
+        max_iter=2000,
+        class_weight="balanced",
+        random_state=42
+    ))
+])
+```
+
+
+
+# Majority Class Baseline
+Before comparing more advanced models, I first establish a simple benchmark using a majority class classifier. Since the dataset is highly imbalanced (~8% default rate), predicting the majority class (non-default) provides a baseline accuracy and AUC for comparison.
+```{python}
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+# Stratified 50k sample (same sample for fair comparison)
+dummy = DummyClassifier(strategy="most_frequent")
+
+auc_scores_dummy = cross_val_score(
+    dummy,
+    X_sample,
+    y_sample,
+    scoring="roc_auc",
+    cv=cv
+)
+
+acc_scores_dummy = cross_val_score(
+    dummy,
+    X_sample,
+    y_sample,
+    scoring="accuracy",
+    cv=cv
+)
+
+print("Majority Class Baseline AUC:", round(auc_scores_dummy.mean(), 4))
+print("Majority Class Baseline Accuracy:", round(acc_scores_dummy.mean(), 4))
+```
+The majority class model gets a really high accuracy (around 91.9%) just by predicting everyone as non-default. But its AUC is 0.50, which means it’s basically no better than random guessing when it comes to actually separating defaulters from non-defaulters. This shows why accuracy can be misleading with imbalanced data and why ROC AUC is a better metric for this problem.
+
+
+
+## 2. Compare Candidate Models (3-Fold CV AUC)
+Now that I have a baseline (majority class), I’m going to try a few different model types and compare them using the same 50k stratified sample and 3-fold ROC AUC.
+```{python}
+import pandas as pd
+import warnings
+from sklearn.model_selection import cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.pipeline import Pipeline
+
+warnings.filterwarnings("ignore")  # keep the notebook output cleaner
+
+# Re-use the same sample + CV so results are comparable
+# (X_sample, y_sample, cv were created earlier)
+
+def mean_std_auc(pipe, X, y, cv):
+    scores = cross_val_score(pipe, X, y, scoring="roc_auc", cv=cv)
+    return scores.mean(), scores.std()
+
+models = {}
+
+# 1) Logistic Regression (no class weighting)
+models["LogReg (no class_weight)"] = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", LogisticRegression(solver="saga", max_iter=2000, random_state=42))
+])
+
+# 2) Logistic Regression (class weighting)  <-- your imbalance-aware baseline
+models["LogReg (class_weight=balanced)"] = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", LogisticRegression(solver="saga", max_iter=2000, class_weight="balanced", random_state=42))
+])
+
+# 3) Random Forest (different model type)
+# NOTE: RF can be slower; keep it modest so it doesn't melt your laptop
+models["Random Forest (balanced_subsample)"] = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", RandomForestClassifier(
+        n_estimators=300,
+        max_depth=None,
+        min_samples_leaf=2,
+        class_weight="balanced_subsample",
+        random_state=42,
+        n_jobs=-1
+    ))
+])
+
+# 4) Gradient boosting (different model type)
+# HistGradientBoosting is usually fast and works well as a benchmark
+models["HistGradientBoosting"] = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", HistGradientBoostingClassifier(random_state=42))
+])
+
+results = []
+print("Running 3-fold CV AUC on the 50k sample...")
+
+for name, pipe in models.items():
+    mean_auc, std_auc = mean_std_auc(pipe, X_sample, y_sample, cv)
+    results.append({"model": name, "cv_auc_mean": mean_auc, "cv_auc_std": std_auc})
+
+results_df = pd.DataFrame(results).sort_values("cv_auc_mean", ascending=False)
+results_df
+```
+After testing a few different model types on the same 50k stratified sample with 3-fold cross-validation, it’s pretty clear that the tree-based models are performing better than logistic regression. HistGradientBoosting has the highest ROC AUC (around 0.736), with Random Forest not too far behind (around 0.724). Logistic regression is noticeably lower (around 0.60–0.62), and interestingly, using class_weight="balanced" actually made the AUC slightly worse in this case. Based on these results, I’m going to move forward with HistGradientBoosting as my strongest model so far and focus next on class imbalance strategies and hyperparameter tuning for that model.
+
+
+
+## 3. Address Class Imbalance (compare with vs. without adjustment)
+Even though ROC AUC is less sensitive to imbalance than accuracy, the target is still pretty skewed (~8% default). Next I’m going to test a few simple imbalance strategies (oversampling and undersampling) and see if they actually improve AUC compared to the “plain” model. I’ll keep the same 50k stratified sample and 3-fold CV so the results are directly comparable.
+```{python}
+import sys, subprocess
+
+# Install imbalanced-learn if it's missing (needed for SMOTE/over/under sampling)
+try:
+    import imblearn
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "imbalanced-learn"])
+    import imblearn
+
+import pandas as pd
+from sklearn.model_selection import cross_val_score
+from sklearn.ensemble import HistGradientBoostingClassifier
+
+from imblearn.pipeline import Pipeline as ImbPipeline
+from imblearn.over_sampling import RandomOverSampler, SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+
+# Compare imbalance strategies using the same preprocess + same CV
+imbalance_models = {
+    "HGB (no resampling)": ImbPipeline(steps=[
+        ("preprocess", preprocess),
+        ("model", HistGradientBoostingClassifier(random_state=42))
+    ]),
+    "HGB + RandomOverSampler": ImbPipeline(steps=[
+        ("preprocess", preprocess),
+        ("sampler", RandomOverSampler(random_state=42)),
+        ("model", HistGradientBoostingClassifier(random_state=42))
+    ]),
+    "HGB + RandomUnderSampler": ImbPipeline(steps=[
+        ("preprocess", preprocess),
+        ("sampler", RandomUnderSampler(random_state=42)),
+        ("model", HistGradientBoostingClassifier(random_state=42))
+    ]),
+    "HGB + SMOTE": ImbPipeline(steps=[
+        ("preprocess", preprocess),
+        ("sampler", SMOTE(random_state=42)),
+        ("model", HistGradientBoostingClassifier(random_state=42))
+    ])
+}
+
+imb_results = []
+print("Running imbalance strategy comparison (3-fold CV AUC on the 50k sample)...")
+
+for name, pipe in imbalance_models.items():
+    scores = cross_val_score(pipe, X_sample, y_sample, scoring="roc_auc", cv=cv)
+    imb_results.append({
+        "model": name,
+        "cv_auc_mean": scores.mean(),
+        "cv_auc_std": scores.std()
+    })
+
+imb_results_df = pd.DataFrame(imb_results).sort_values("cv_auc_mean", ascending=False)
+imb_results_df
+```
+The plain HistGradientBoosting model (no resampling) actually performed the best, with a ROC AUC of about 0.736. SMOTE was almost the same, but didn’t really improve anything, and both oversampling and undersampling slightly reduced performance. This suggests the model is already handling the class imbalance well on its own. Since ROC AUC focuses on ranking performance, resampling doesn’t seem necessary here, so I’ll move forward with the regular model and focus on hyperparameter tuning next.
+
+
+
+## 4. Hyperparameter Tuning (Randomized Search)
+Now that HistGradientBoosting is my best-performing model so far (and resampling didn’t help), the next step is to tune its hyperparameters. To keep runtime reasonable, I’ll do the randomized search on a smaller stratified subsample (5k rows) with 3-fold CV, then evaluate the best model again on the full 50k sample.
+```{python}
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import cross_val_score
+
+# 1) Create a smaller stratified subsample (5k) for tuning speed
+X_tune, _, y_tune, _ = train_test_split(
+    X_sample, y_sample,
+    train_size=5000,
+    stratify=y_sample,
+    random_state=42
+)
+
+# 2) Base pipeline (same preprocess you used before)
+hgb_pipe = Pipeline(steps=[
+    ("preprocess", preprocess),
+    ("model", HistGradientBoostingClassifier(random_state=42))
+])
+
+# 3) Randomized search space (kept modest so it runs on a laptop)
+param_distributions = {
+    "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
+    "model__max_depth": [None, 3, 5, 7],
+    "model__max_leaf_nodes": [15, 31, 63, 127],
+    "model__min_samples_leaf": [10, 20, 50, 100],
+    "model__l2_regularization": [0.0, 0.1, 1.0, 5.0],
+    "model__max_bins": [64, 128, 255]
+}
+
+search = RandomizedSearchCV(
+    estimator=hgb_pipe,
+    param_distributions=param_distributions,
+    n_iter=20,              # per assignment suggestion (~20)
+    scoring="roc_auc",
+    cv=3,                   # 3-fold CV for speed
+    random_state=42,
+    n_jobs=-1,
+    verbose=0
+)
+
+search.fit(X_tune, y_tune)
+
+print("Best CV ROC AUC on 5k tuning sample:", round(search.best_score_, 4))
+print("Best parameters:", search.best_params_)
+
+best_hgb = search.best_estimator_
+
+# 4) Re-check tuned model on the full 50k sample (same CV as before)
+tuned_auc_scores = cross_val_score(best_hgb, X_sample, y_sample, scoring="roc_auc", cv=cv)
+print("Tuned model ROC AUC on 50k sample (mean):", round(tuned_auc_scores.mean(), 4))
+print("Tuned model ROC AUC on 50k sample (std):", round(tuned_auc_scores.std(), 4))
+```
+The tuned HistGradientBoosting model performed a little better than the original baseline model, improving from about 0.736 to around 0.740 ROC AUC on the 50k sample. Even though the cross-validated AUC on the smaller 5k tuning subset was lower (around 0.715), when I evaluated the tuned model again on the full 50k sample it showed a clear improvement overall. This tells me the randomized search was able to find a better set of hyperparameters, so I’ll move forward using this tuned HistGradientBoosting model as my final version before adding supplementary features.
+
+
+
+## 5. Adding Supplementary Aggregated Features
+Next, I will incorporate information from the supplementary tables by creating aggregated features at the applicant level and joining them back to the main application data. Since each applicant can have multiple rows in the supplementary tables, I will aggregate them (mean, sum, count, etc.) by `SK_ID_CURR`, then merge the results into the training data. After merging these new features, I will re-evaluate the tuned HistGradientBoosting model to see if predictive performance improves.
+
+# Load bureau dataset (make sure file path is correct)
+```{python}
+bureau = pd.read_csv("bureau.csv")
+
+print("Bureau shape:", bureau.shape)
+bureau.head()
+```
+
+```{python}
+# Aggregate numeric columns only
+bureau_numeric = bureau.select_dtypes(include=["number"])
+
+supp_agg = (
+    bureau_numeric
+        .groupby("SK_ID_CURR")
+        .agg(["mean", "sum", "max", "min", "count"])
+)
+
+# Flatten multi-index columns
+supp_agg.columns = [
+    f"{col[0]}_{col[1]}" for col in supp_agg.columns
+]
+
+supp_agg = supp_agg.reset_index()
+
+# Merge into training set
+train_with_supp = train.merge(supp_agg, on="SK_ID_CURR", how="left")
+
+print("New training shape after merge:", train_with_supp.shape)
+```
+
+```{python}
+# Recreate X and y with supplementary features
+X_supp = train_with_supp.drop(columns=["TARGET"])
+y_supp = train_with_supp["TARGET"]
+
+# Take the same 50k stratified sample (for fair comparison)
+X_sample_supp, _, y_sample_supp, _ = train_test_split(
+    X_supp,
+    y_supp,
+    train_size=50000,
+    stratify=y_supp,
+    random_state=42
+)
+
+# Evaluate tuned model again
+auc_scores_supp = cross_val_score(
+    best_hgb,
+    X_sample_supp,
+    y_sample_supp,
+    scoring="roc_auc",
+    cv=3
+)
+
+print("ROC AUC with supplementary features (mean):", round(auc_scores_supp.mean(), 4))
+print("ROC AUC with supplementary features (std):", round(auc_scores_supp.std(), 4))
+```
+After adding the aggregated bureau features, the ROC AUC increased from about 0.7399 to 0.7417. Although the improvement is modest, it indicates that the historical credit information contains additional predictive signal beyond the original application features. Because ROC AUC measures how well the model ranks applicants by risk, even small gains suggest better separation between higher- and lower-risk individuals. This result shows that incorporating past credit behavior helps the model better capture underlying default risk, so I will retain these supplementary features in the final model moving forward.
+
+
+```{python}
+import numpy as np
+
+def aggregate_numeric_by_id(df, id_col="SK_ID_CURR", agg_list=("mean","sum","max","min","count")):
+    num = df.select_dtypes(include=[np.number])
+    # keep ID column even if it's numeric
+    if id_col not in num.columns:
+        num[id_col] = df[id_col]
+        
+    agg = (
+        num.groupby(id_col)
+           .agg(list(agg_list))
+    )
+    agg.columns = [f"{c[0]}_{c[1]}" for c in agg.columns]
+    agg = agg.reset_index()
+    return agg
+```
+
+
+```{python}
+bureau_balance = pd.read_csv("bureau_balance.csv")
+print(bureau_balance.shape)
+bureau_balance.head()
+```
+
+
+```{python}
+# 1) Aggregate bureau_balance by SK_ID_BUREAU (loan-level)
+bb_by_bureau = (
+    bureau_balance
+    .groupby("SK_ID_BUREAU")
+    .agg(
+        bb_months_mean=("MONTHS_BALANCE", "mean"),
+        bb_months_min=("MONTHS_BALANCE", "min"),
+        bb_months_max=("MONTHS_BALANCE", "max"),
+        bb_rows=("MONTHS_BALANCE", "count"),
+    )
+    .reset_index()
+)
+
+print("bb_by_bureau shape:", bb_by_bureau.shape)
+bb_by_bureau.head()
+```
+
+
+
+```{python}
+# 2) Map SK_ID_BUREAU -> SK_ID_CURR using bureau, then aggregate to applicant level
+bureau_keys = bureau[["SK_ID_BUREAU", "SK_ID_CURR"]].drop_duplicates()
+
+bb_with_curr = bb_by_bureau.merge(bureau_keys, on="SK_ID_BUREAU", how="left")
+
+bb_by_curr = (
+    bb_with_curr
+    .drop(columns=["SK_ID_BUREAU"])
+    .groupby("SK_ID_CURR")
+    .agg(["mean", "sum", "max", "min", "count"])
+)
+
+# Flatten column names
+bb_by_curr.columns = [f"bb_{c0}_{c1}" for c0, c1 in bb_by_curr.columns]
+bb_by_curr = bb_by_curr.reset_index()
+
+print("bb_by_curr shape:", bb_by_curr.shape)
+bb_by_curr.head()
+```
+
+```{python}
+# 3) Merge applicant-level bureau_balance aggregates into training data
+train_with_supp2 = train_with_supp.merge(bb_by_curr, on="SK_ID_CURR", how="left")
+
+print("Shape after adding bureau_balance features:", train_with_supp2.shape)
+```
+
+
+```{python}
+X_supp2 = train_with_supp2.drop(columns=["TARGET"])
+y_supp2 = train_with_supp2["TARGET"]
+
+X_sample_supp2, _, y_sample_supp2, _ = train_test_split(
+    X_supp2, y_supp2,
+    train_size=50000,
+    stratify=y_supp2,
+    random_state=42
+)
+
+auc_scores_supp2 = cross_val_score(
+    best_hgb,
+    X_sample_supp2,
+    y_sample_supp2,
+    scoring="roc_auc",
+    cv=3
+)
+
+print("ROC AUC with bureau + bureau_balance features (mean):", round(auc_scores_supp2.mean(), 4))
+print("ROC AUC with bureau + bureau_balance features (std):", round(auc_scores_supp2.std(), 4))
+```
+
+
+
+```{python}
+test_with_supp = test.merge(supp_agg, on="SK_ID_CURR", how="left")
+```
+
+
+```{python}
+test_with_supp2 = test_with_supp.merge(bb_by_curr, on="SK_ID_CURR", how="left")
+print("Test shape after adding features:", test_with_supp2.shape)
+```
+
+
+```{python}
+X_final = train_with_supp2.drop(columns=["TARGET"])
+y_final = train_with_supp2["TARGET"]
+
+best_hgb.fit(X_final, y_final)
+```
+
+
+```{python}
+test_probs = best_hgb.predict_proba(test_with_supp2)[:, 1]
+```
+
+
+
+```{python}
+submission = pd.DataFrame({
+    "SK_ID_CURR": test_with_supp2["SK_ID_CURR"],
+    "TARGET": test_probs
+})
+
+submission.to_csv("submission.csv", index=False)
+submission.head()
+```
+Overall, adding aggregated credit history features improved model performance. The tuned HistGradientBoosting model increased from a ROC AUC of about 0.7399 using only application data to 0.7417 after incorporating bureau and bureau_balance features. While the improvement is modest, it shows that historical credit behavior provides additional predictive signal.
+
+
+
+```{python}
+# --- Final submission (matches pipeline columns) ---
+
+# Ensure SK_ID_CURR exists in test as a column (not index)
+if "SK_ID_CURR" not in test_with_supp2.columns and test_with_supp2.index.name == "SK_ID_CURR":
+    test_with_supp2 = test_with_supp2.reset_index()
+
+# Save IDs for submission
+test_ids = test_with_supp2["SK_ID_CURR"].copy()
+
+# IMPORTANT: Do NOT drop SK_ID_CURR if your pipeline was built with it
+X_train_final = train_with_supp2.drop(columns=["TARGET"], errors="ignore")
+y_train_final = train_with_supp2["TARGET"].astype(int)
+
+X_test_final = test_with_supp2.copy()
+
+# Fit + predict
+final_model = best_hgb
+final_model.fit(X_train_final, y_train_final)
+test_probs = final_model.predict_proba(X_test_final)[:, 1]
+
+# Submission
+submission = pd.DataFrame({
+    "SK_ID_CURR": test_ids,
+    "TARGET": test_probs
+})
+submission.to_csv("submission.csv", index=False)
+submission.head()
+```
+
+
+
