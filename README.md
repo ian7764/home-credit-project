@@ -16,3 +16,9 @@ This project also includes a modeling notebook called modeling.qmd. In this note
 Kaggle Scores:
 - Public AUC: 0.73288  
 - Private AUC: 0.72729
+
+
+# Model Card (03/05/2026):
+This repository’s model_card.qmd is a business‑friendly write‑up of the Kaggle Home Credit Default Risk work, turning the modeling results into an executive summary plus sections on Model Details, Intended Use, Performance Metrics, Threshold Analysis, Explainability, Adverse Action Mapping, Fairness, and Limitations. It explains the chosen threshold, the expected financial impact, and the key caveats in plain language, while linking to the underlying modeling notebook for traceability. The document is designed for non-technical readers, with code folded and outputs visible in the HTML render and with governance notes (ECOA and fair lending) and a plan for monitoring, retraining, and deployment readiness.
+
+
