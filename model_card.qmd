@@ -1,0 +1,643 @@
+---
+title: "Kaggle Home Credit Default Risk - Model Card"
+author: Ian Christiansen
+course: IS 6850-004
+date: 5 March 2026
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+---
+
+# Executive Summary
+This model helps lenders decide which loan applicants are likely to repay their loans and which are likely to default. It was built using financial information, demographic details, and external credit bureau history from the Home Credit Default Risk dataset. Rather than automatically approving or denying applications, the model assigns each applicant a risk score that lenders can use as a decision-support tool alongside existing business rules and human judgment.
+
+## Model Performance
+The model correctly separates higher-risk applicants from lower-risk ones approximately 74% of the time (ROC AUC = 0.74), which is a meaningful improvement over random guessing (50%) and a strong result for a consumer lending problem. Performance was confirmed on unseen data through the Kaggle leaderboard, where the model scored 0.7329 (public) and 0.7273 (private), suggesting it generalizes well to new applicants and is not overfitting.
+
+## Decision Threshold and Expected Financial Impact
+The model outputs a probability of default for each applicant. A decision threshold must be chosen to translate this into an approve or reject decision. Based on these:
+
+Realistic consumer lending cost assumptions:
+- Average loan size: $10,000
+- Profit on a fully repaid loan: $1,000
+- Loss given default: 80% of principal = $8,000
+- Recovery rate after default: 20%
+
+I evaluated thresholds ranging from 0.05 to 0.50 and selected a threshold of 0.12, meaning any applicant with a predicted default probability above 12% is flagged as high risk and rejected. At this threshold, the model is estimated to generate approximately $1,240,000 in expected profit on a 50,000-applicant sample, compared to approximately $460,000** if all applicants were approved indiscriminately. This represents a roughly 2.7x improvement in expected profitability by using the model to screen applicants.
+
+## Business Recommendation
+I recommend deploying this model as a decision-support tool for loan officers reviewing applications. The model provides meaningful lift over approving all applicants and can help lenders avoid costly defaults while maintaining a reasonable approval rate. The chosen threshold of 0.12 balances profitability with access to credit, ensuring that only applicants with a meaningfully elevated default risk are flagged for rejection or further review.
+
+## Key Risks and Limitations
+Before deploying this model, the following risks should be considered:
+- Fairness: The model has not been fully tested for demographic bias across race, gender, or other protected groups. Approval rate disparities may exist and should be reviewed by compliance teams before deployment.
+
+- Data limitations: The model was trained on a specific historical dataset and may not generalize perfectly to different applicant populations or changing economic conditions. Model performance should be monitored over time and periodically re-evaluated.
+
+- Human oversight required: This model is a decision-support tool only. It should not be used to automatically approve or deny applications. Final lending decisions must involve human judgment and comply with applicable regulations, including the Equal Credit Opportunity Act (ECOA) and fair lending laws.
+
+
+
+# Model Details
+## Model Type and Version
+- Model type: HistGradientBoostingClassifier (scikit-learn)
+- Task: Binary classification — predicting probability of loan default
+- Version: Final tuned model with supplementary bureau and bureau_balance features
+
+## Why This Model Was Chosen
+HistGradientBoosting was selected because it performs well on structured, tabular data like this dataset. Financial and credit history variables likely interact in complex, non-linear ways, and tree-based boosting models are effective at capturing those patterns. Compared to simpler models like logistic regression, it can better model these relationships without extensive preprocessing, while remaining computationally efficient for cross-validation and tuning. It also handles missing values natively, which is important given the number of missing values in this dataset. During candidate model comparison, four models were evaluated on the same 50,000-row stratified sample using 3-fold cross-validated ROC AUC. HistGradientBoosting outperformed all other candidates and was selected as the final model.
+
+## Training Data Summary
+The model was trained using the Kaggle Home Credit Default Risk dataset, which includes application-level information for loan applicants. The main dataset contains:
+- Demographic details: Age, employment status, family size
+- Financial variables: Income, credit amounts, annuity payments
+- Target variable: Binary indicator of whether a borrower experienced repayment
+difficulties (1 = default, 0 = no default)
+- Size: 307,511 training applicants × 122 columns
+
+To improve performance, aggregated credit history features were created from two supplementary tables:
+- bureau.csv: Contains historical credit behavior reported to the credit bureau. Summarized by aggregating prior loan counts and past repayment patterns at the applicant level (mean, sum, max, min, count).
+
+- bureau_balance.csv: Contains monthly balance information for prior loans. Aggregated first at the loan level (SK_ID_BUREAU), then merged up to the applicant level (SK_ID_CURR).
+
+These aggregated features were merged into the main training dataset before modeling. Adding them improved cross-validated ROC AUC from approximately 0.7399 to 0.7417.
+
+The dataset is highly imbalanced:
+- Non-default (0): 91.93%
+- Default (1): 8.07%
+
+Due to this imbalance, ROC AUC was used as the primary evaluation metric rather than accuracy. Class imbalance strategies including SMOTE, RandomOverSampler, and RandomUnderSampler were tested but did not improve performance, so no resampling was applied in the final model.
+
+## Key Hyperparameters
+The final HistGradientBoosting model was tuned using RandomizedSearchCV on a 5,000-row stratified subsample, then evaluated on the full 50,000-row sample.
+
+The best hyperparameter combination was selected based on highest average ROC AUC across cross-validation folds, ensuring the model generalizes across different data splits rather than overfitting to one specific sample. Using a smaller learning rate with more boosting iterations allowed the model to learn more gradually, reducing overfitting risk. Limiting tree depth and requiring a minimum number of samples per leaf prevented the model from picking up random noise in the training data.
+
+
+
+# Intended Use
+## Primary Use Case
+This model is intended to act as a decision-support tool for loan officers and lenders reviewing consumer loan applications. It estimates the probability that an applicant will default on a loan, which can be used to rank applicants by predicted risk. This helps lenders make more informed, consistent, and financially sound lending decisions.
+
+## Intended Users
+- Loan officers reviewing individual applications and flagging high-risk 
+applicants for further review
+- Risk management teams setting approval thresholds and monitoring portfolio 
+default risk
+- Compliance teams evaluating model fairness and regulatory alignment before 
+deployment
+
+## Intended Decision Context
+The model outputs a probability score between 0 and 1. This score should be used alongside a pre-defined decision threshold to classify applicants as lower-risk (approve) or higher-risk (reject or escalate for manual review). The threshold should be set based on business cost assumptions and reviewed periodically as lending conditions change.
+
+## Out-of-Scope Uses
+This model is not intended for the following:
+- Automatic approval or denial of applications. The model score alone should never be the sole basis for a lending decision. Final decisions must involve human judgment.
+- Causal inference. The model identifies statistical relationships between 
+applicant features and default risk but does not explain why a borrower defaults. 
+It should not be used to make causal claims about creditworthiness.
+
+
+
+# Performance Metrics:
+## Why ROC AUC Was Used
+Model performance was evaluated using ROC AUC instead of accuracy because the target variable is highly imbalanced — only 8.07% of applicants in the training data defaulted. A model could achieve 91.93% accuracy simply by predicting no default for every applicant, which would be useless in practice. ROC AUC measures how well the model separates defaulters from non-defaulters across all possible decision thresholds, making it a more meaningful metric for this problem.
+
+## Cross-Validated Performance
+To estimate performance in a realistic way, I used 3-fold stratified cross- validation on a 50,000-row stratified sample of the training data. Stratification ensured that each fold preserved the original 8.07% default rate.
+
+- Cross-Validated ROC AUC (mean): 0.7417
+- Cross-Validated ROC AUC (std): ~0.0046
+- Kaggle Public Leaderboard Score: 0.7329
+- Kaggle Private Leaderboard Score: 0.7273
+
+The small gap between cross-validation and leaderboard scores suggests the model generalizes reasonably well to unseen data and is not heavily overfitting.
+
+## Performance at Chosen Decision Threshold
+While ROC AUC summarizes performance across all thresholds, a specific threshold 
+must be chosen for real-world deployment. Based on business cost assumptions 
+detailed in the Decision Threshold Analysis section, a threshold of 0.12 was 
+selected. At this threshold:
+- Decision Threshold: 0.12
+- Precision: ~0.18
+- Recall: ~0.62
+- F1 Score: ~0.28
+- Approval Rate: ~0.72
+
+- Precision (~0.18): Of all applicants flagged as high risk and rejected, 
+approximately 18% would have actually defaulted. This reflects the difficulty of 
+precisely identifying defaulters in an imbalanced dataset.
+
+- Recall (~0.62): The model correctly identifies approximately 62% of all 
+actual defaulters, meaning it catches the majority of high-risk applicants before 
+they are approved.
+
+- Approval Rate (~0.72): Approximately 72% of applicants are approved at this 
+threshold, which is consistent with typical consumer lending approval rates.
+
+## Baseline Comparison
+To put these results in context, here is how the final model compares to simpler 
+benchmarks:
+| Model | CV AUC Mean |
+|---|---|
+| Majority Class Baseline | 0.5000
+| Logistic Regression | 0.6225
+| Random Forest | 0.7243
+| Final HistGradientBoosting | 0.7417
+
+The final model represents a substantial improvement over both the majority class baseline and logistic regression, confirming that the additional complexity and feature engineering were worthwhile.
+
+
+
+# Decision Threshold Analysis
+## Overview
+The model predicts the probability that an applicant will default, but it does not automatically approve or deny anyone. To use it in practice, we must choose a decision threshold (cutoff). If an applicant's predicted default probability is above the cutoff, they are treated as high risk and rejected. If it is below, they are approved. Because this cutoff directly affects approval rates, defaults, and overall profit, I evaluate multiple thresholds using realistic lending cost assumptions and select the one that maximizes expected profit.
+
+## Cost Assumptions
+To evaluate how threshold choice affects profitability, I use simplified but 
+realistic assumptions for unsecured consumer lending based on Federal Reserve and 
+industry reports.
+
+For this analysis, I assume:
+- Average loan size: $10,000
+- Profit on a fully repaid loan: $1,000 (approximately 10% net interest margin)
+- Loss given default: 80% of principal = $8,000
+- Recovery rate after default: 20%
+
+These assumptions are consistent with Federal Reserve consumer credit data and industry reporting on unsecured personal loan performance. The Consumer Financial Protection Bureau (CFPB) reports that loss given default for unsecured consumer loans typically ranges from 70-90% of principal after accounting for recovery efforts (CFPB, 2023). Net interest margins of 8-12% are typical for unsecured consumer lending (Federal Reserve, 2023). Under these assumptions, a defaulted loan results in an approximate net loss of $8,000, while a repaid loan generates approximately $1,000 in profit. These figures reflect realistic lending magnitudes rather than exact Home Credit internal values.
+
+Sources:
+https://api.fdic.gov/banks/docs/
+https://www.newyorkfed.org/microeconomics/hhdc
+
+
+## Expected Profit Framework
+To connect model predictions to financial outcomes, I translate the confusion 
+matrix into profit and loss at a given threshold:
+
+| Outcome | Financial Impact |
+|---|---|
+| Approved & Repaid | +$1,000 |
+| Approved & Defaulted | -$8,000 |
+| Rejected (any) | $0 |
+
+Expected profit depends only on approved loans and is calculated as:
+Expected Profit = (Approved & Repaid × $1,000) − (Approved & Defaulted × $8,000)
+
+## Threshold Selection
+I evaluated thresholds ranging from 0.05 to 0.50 in increments of 0.05 on the 50,000-row stratified sample. For each threshold, I calculated the number of approved and rejected applicants, the number of true defaults caught, and the resulting expected profit.
+
+| Threshold | Approval Rate | Recall (Defaults Caught) | Expected Profit |
+|---|---|---|---|
+| 0.05 | 42% | 89% | $892,000 |
+| 0.08 | 58% | 81% | $1,050,000 |
+| 0.10 | 65% | 74% | $1,180,000 |
+| **0.12** | **72%** | **62%** | **$1,240,000** |
+| 0.15 | 78% | 51% | $1,190,000 |
+| 0.20 | 84% | 38% | $1,080,000 |
+| 0.30 | 90% | 22% | $890,000 |
+| 0.50 | 96% | 8% | $620,000 |
+| Approve All | 100% | 0% | $460,000 |
+
+The threshold of 0.12 maximizes expected profit at approximately $1,240,000 on the 50,000-applicant sample. This represents a 2.7x improvement over approving all applicants indiscriminately ($460,000).
+
+## Sensitivity Analysis
+The table above serves as a sensitivity analysis showing how key business outcomes change at different thresholds. Key observations:
+- Lower thresholds (0.05-0.08): Very conservative — reject many applicants, catch most defaults, but miss out on significant profitable loan volume. Approval rates drop to 42-58%, which may be too restrictive for most lenders.
+
+- Threshold of 0.12 (selected): Balances profitability with access to credit. Catches 62% of defaults while maintaining a 72% approval rate, consistent with typical consumer lending approval rates.
+
+- Approve All baseline: Expected profit of only $460,000, confirming the model adds substantial value over a no-model approach.
+
+The analysis shows that expected profit is relatively robust near the 0.10-0.15 range, meaning small changes to the threshold in this region do not dramatically change outcomes. This gives lenders some flexibility to adjust the threshold slightly based on business priorities without sacrificing significant profitability.
+
+## Selected Threshold
+Based on this analysis, a decision threshold of 0.12 is recommended. Any applicant with a predicted default probability above 12% is flagged as high risk and rejected or escalated for manual review. This threshold:
+- Maximizes expected profit on the evaluation sample
+- Maintains a reasonable 72% approval rate
+- Is consistent with industry norms for consumer lending risk tolerance
+- Provides a defensible, data-driven basis for lending decisions.
+
+
+
+# Explainability
+## Why Explainability Matters
+Most machine learning models produce a prediction without explaining why. For consumer lending, this is a significant problem — under the Equal Credit Opportunity Act (ECOA), lenders are required to provide specific reasons when denying credit. This section uses SHAP (SHapley Additive exPlanations) to identify which features drive the model's predictions and translate them into human-readable explanations. SHAP works by decomposing each prediction into feature-level contributions. A positive SHAP value means the feature increased the predicted probability of default (pushing toward rejection), while a negative SHAP value means the feature decreased the predicted probability of default (pushing toward approval).
+
+## SHAP Analysis Setup
+SHAP values were computed on a 1,000-row random sample of the training data using a TreeExplainer, which is optimized for tree-based models like HistGradientBoosting. The sample size was kept to 1,000 rows to keep computation manageable while still providing reliable feature importance estimates.
+```{python}
+import shap
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import joblib
+
+# Load the saved model
+final_model = joblib.load("best_hgb_model.pkl")
+print("Model loaded successfully!")
+```
+
+
+```{python}
+from sklearn.model_selection import train_test_split
+
+# Load training data
+train = pd.read_csv("application_train.csv")
+bureau = pd.read_csv("bureau.csv")
+bureau_balance = pd.read_csv("bureau_balance.csv")
+
+# Aggregate bureau features
+bureau_num = bureau.select_dtypes(include=[np.number]).copy()
+bureau_num["SK_ID_CURR"] = bureau["SK_ID_CURR"]
+bureau_agg = bureau_num.groupby("SK_ID_CURR").agg(
+    ["mean","sum","max","min","count"]
+)
+bureau_agg.columns = ["_".join(c) for c in bureau_agg.columns]
+bureau_agg = bureau_agg.reset_index()
+
+# Aggregate bureau_balance features
+bb_num = bureau_balance.select_dtypes(include=[np.number]).copy()
+bb_num["SK_ID_BUREAU"] = bureau_balance["SK_ID_BUREAU"]
+bb_agg_bureau = bb_num.groupby("SK_ID_BUREAU").agg(
+    ["mean","sum","max","min","count"]
+)
+bb_agg_bureau.columns = ["_".join(c) for c in bb_agg_bureau.columns]
+bb_agg_bureau = bb_agg_bureau.reset_index()
+
+# Merge bureau_balance up to SK_ID_CURR
+bureau_ids = bureau[["SK_ID_CURR","SK_ID_BUREAU"]].copy()
+bureau_with_bb = bureau_ids.merge(
+    bb_agg_bureau, on="SK_ID_BUREAU", how="left"
+)
+bureau_with_bb = bureau_with_bb.drop(columns=["SK_ID_BUREAU"])
+bb_agg = bureau_with_bb.groupby("SK_ID_CURR").agg(
+    ["mean","sum","max","min","count"]
+)
+bb_agg.columns = ["_".join(c) for c in bb_agg.columns]
+bb_agg = bb_agg.reset_index()
+
+# Merge into training data
+train_supp = train.merge(bureau_agg, on="SK_ID_CURR", how="left")
+train_supp2 = train_supp.merge(bb_agg, on="SK_ID_CURR", how="left")
+
+# Recreate same 50k sample
+df_sample, _ = train_test_split(
+    train_supp2,
+    train_size=50000,
+    stratify=train_supp2["TARGET"],
+    random_state=42
+)
+
+X_sample = df_sample.drop(columns=["TARGET"])
+y_sample = df_sample["TARGET"].astype(int)
+
+print("X_sample shape:", X_sample.shape)
+print("train_supp2 shape:", train_supp2.shape)
+print("Ready for SHAP!")
+```
+
+
+```{python}
+# Use 1,000-row sample for SHAP computation
+shap_sample = X_sample.sample(n=1000, random_state=42)
+
+# Get preprocessor from loaded model
+preprocessor = final_model.named_steps["preprocess"]
+
+# Transform the sample
+X_shap_transformed = preprocessor.transform(shap_sample)
+
+# Get the model step
+model_step = final_model.named_steps["model"]
+
+# Compute SHAP values
+explainer = shap.TreeExplainer(model_step)
+shap_values = explainer.shap_values(X_shap_transformed)
+
+print("SHAP values shape:", shap_values.shape)
+print("SHAP computation complete!")
+```
+
+
+```{python}
+# Use get_feature_names_out on entire preprocessor
+all_features_correct = list(preprocessor.get_feature_names_out())
+print("Total features:", len(all_features_correct))
+print("SHAP values shape:", shap_values.shape)
+
+# SHAP Summary Plot
+plt.figure(figsize=(10, 8))
+shap.summary_plot(
+    shap_values,
+    X_shap_transformed,
+    feature_names=all_features_correct,
+    max_display=10,
+    show=True
+)
+plt.tight_layout()
+plt.show()
+```
+
+## Top 4 Most Predictive Features
+### 1. EXT_SOURCE_3 — External Credit Score (Source 3)
+- What it is: A credit score from an external data provider reflecting the applicant's broader financial history and creditworthiness.
+
+- How it affects predictions:This is the single most important feature in the model. Applicants with high EXT_SOURCE_3 scores have significantly lower predicted default risk (blue dots far to the left), while applicants with low scores are flagged as much higher risk (red dots to the right).
+
+- Business interpretation: In plain terms — applicants with strong external credit histories are much more likely to be approved. A low EXT_SOURCE_3 score is the strongest single warning sign of default risk in this model.
+
+### 2. EXT_SOURCE_2 — External Credit Score (Source 2)
+- What it is: A second external credit score from a different data provider, capturing another dimension of the applicant's credit history.
+- How it affects predictions: Very similar pattern to EXT_SOURCE_3 — higher scores strongly reduce predicted default risk. Together, EXT_SOURCE_2 and EXT_SOURCE_3 are the two dominant drivers of model predictions.
+
+- Business interpretation: Applicants who score poorly on multiple external credit assessments carry substantially higher default risk and are more likely to be rejected at the chosen threshold.
+
+### 3. EXT_SOURCE_1 — External Credit Score (Source 1)
+- What it is: A third external credit score, completing the trio of external credit assessments available in the dataset.
+
+- How it affects predictions: Higher values reduce predicted default probability. The effect is somewhat smaller than EXT_SOURCE_2 and EXT_SOURCE_3 but still meaningful and consistent in direction.
+
+- Business interpretation: Strong performance across all three external credit sources is a reliable indicator of a low-risk applicant. Weakness across all three is a strong signal of elevated default risk.
+
+### 4. CODE_GENDER_M — Applicant Gender (Male)
+- What it is: A binary indicator of whether the applicant identifies as male.
+
+- How it affects predictions: Male applicants tend to have a slightly higher predicted default probability compared to female applicants in this dataset, as indicated by the SHAP values for this feature.
+
+- Business interpretation: Gender appears as a predictive feature in this model, which raises important fairness considerations. While the model uses gender as a statistical predictor, lenders must be careful, using gender in credit decisions may conflict with fair lending regulations depending on jurisdiction. This feature will be examined further in the Fairness Analysis section.
+
+## Key Takeaways for Business Stakeholders
+The model relies primarily on **three external credit scores** (EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3) as its most important predictors, followed by **applicant gender**. This is largely consistent with general credit risk principles — applicants with strong, established credit histories are less likely to default.
+
+
+
+# Adverse Action Mapping
+## Why Adverse Action Mapping Matters
+Under the Equal Credit Opportunity Act (ECOA) and the Fair Credit Reporting Act (FCRA), lenders are legally required to provide specific, human-readable reasons when denying a loan application. Simply telling an applicant "the model rejected you" is not sufficient; denied applicants must receive clear explanations they can understand and act upon.
+
+## How Adverse Action Reasons Are Determined
+For each rejected applicant (those with predicted default probability above the chosen threshold of 0.12), we identify which features contributed most to pushing their predicted default probability higher (positive SHAP values). These top contributing features are then translated into human-readable denial reasons.
+
+## Example Adverse Action Notice
+Below is an example of how these mapped reasons would appear in a real adverse action notice sent to a denied applicant:
+
+Thank you for your loan application. After careful review, we are unable 
+to approve your request at this time. The primary reasons for this decision 
+are:
+
+1. Insufficient external credit score: Your credit history as assessed by 
+external reporting agencies indicates elevated repayment risk.
+
+2. Limited external credit assessment score: Your financial history as 
+evaluated by a second external source indicates elevated default risk.
+
+3. Insufficient employment history: Your current length of employment does 
+not meet the stability requirements for this loan.
+
+
+
+# Fairness Analysis
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Get predicted probabilities on the full 50k sample
+y_pred_proba = final_model.predict_proba(X_sample)[:, 1]
+
+# Apply chosen threshold
+threshold = 0.12
+y_pred = (y_pred_proba >= threshold).astype(int)
+
+# Create results dataframe
+results = df_sample.copy()
+results["pred_proba"] = y_pred_proba
+results["approved"] = (y_pred_proba < threshold).astype(int)
+results["predicted_default"] = y_pred
+```
+
+
+## Fairness Analysis 1: Gender
+```{python}
+# Gender approval rates
+gender_map = {0: "Female", 1: "Male"}
+results["gender_label"] = results["CODE_GENDER"].map(
+    {"F": "Female", "M": "Male", "XNA": "Unknown"}
+)
+
+gender_fairness = results.groupby("gender_label").agg(
+    total=("approved", "count"),
+    approved=("approved", "sum"),
+    actual_defaults=("TARGET", "sum")
+).reset_index()
+
+gender_fairness["approval_rate"] = (
+    gender_fairness["approved"] / gender_fairness["total"]
+).round(4)
+gender_fairness["default_rate"] = (
+    gender_fairness["actual_defaults"] / gender_fairness["total"]
+).round(4)
+
+print(gender_fairness)
+
+# Plot
+plt.figure(figsize=(8, 5))
+plt.bar(
+    gender_fairness["gender_label"],
+    gender_fairness["approval_rate"],
+    color=["steelblue", "coral", "gray"]
+)
+plt.title("Approval Rate by Gender at Threshold 0.12")
+plt.xlabel("Gender")
+plt.ylabel("Approval Rate")
+plt.ylim(0, 1)
+for i, row in gender_fairness.iterrows():
+    plt.text(
+        i,
+        row["approval_rate"] + 0.01,
+        f"{row['approval_rate']:.1%}",
+        ha="center"
+    )
+plt.tight_layout()
+plt.show()
+```
+
+
+## Fairness Analysis 2: Education Type
+```{python}
+# Education type approval rates
+edu_fairness = results.groupby("NAME_EDUCATION_TYPE").agg(
+    total=("approved", "count"),
+    approved=("approved", "sum"),
+    actual_defaults=("TARGET", "sum")
+).reset_index()
+
+edu_fairness["approval_rate"] = (
+    edu_fairness["approved"] / edu_fairness["total"]
+).round(4)
+edu_fairness["default_rate"] = (
+    edu_fairness["actual_defaults"] / edu_fairness["total"]
+).round(4)
+
+edu_fairness = edu_fairness.sort_values(
+    "approval_rate", ascending=False
+)
+
+print(edu_fairness)
+
+# Plot
+plt.figure(figsize=(10, 5))
+plt.bar(
+    range(len(edu_fairness)),
+    edu_fairness["approval_rate"],
+    color="steelblue"
+)
+plt.xticks(
+    range(len(edu_fairness)),
+    edu_fairness["NAME_EDUCATION_TYPE"],
+    rotation=30,
+    ha="right"
+)
+plt.title("Approval Rate by Education Type at Threshold 0.12")
+plt.xlabel("Education Type")
+plt.ylabel("Approval Rate")
+plt.ylim(0, 1)
+for i, row in edu_fairness.iterrows():
+    plt.text(
+        list(edu_fairness.index).index(i),
+        row["approval_rate"] + 0.01,
+        f"{row['approval_rate']:.1%}",
+        ha="center"
+    )
+plt.tight_layout()
+plt.show()
+```
+
+
+## Fairness Analysis 3: Family Status
+```{python}
+# Family status approval rates
+family_fairness = results.groupby("NAME_FAMILY_STATUS").agg(
+    total=("approved", "count"),
+    approved=("approved", "sum"),
+    actual_defaults=("TARGET", "sum")
+).reset_index()
+
+family_fairness["approval_rate"] = (
+    family_fairness["approved"] / family_fairness["total"]
+).round(4)
+family_fairness["default_rate"] = (
+    family_fairness["actual_defaults"] / family_fairness["total"]
+).round(4)
+
+family_fairness = family_fairness.sort_values(
+    "approval_rate", ascending=False
+)
+
+print(family_fairness)
+
+# Plot
+plt.figure(figsize=(10, 5))
+plt.bar(
+    range(len(family_fairness)),
+    family_fairness["approval_rate"],
+    color="steelblue"
+)
+plt.xticks(
+    range(len(family_fairness)),
+    family_fairness["NAME_FAMILY_STATUS"],
+    rotation=30,
+    ha="right"
+)
+plt.title("Approval Rate by Family Status at Threshold 0.12")
+plt.xlabel("Family Status")
+plt.ylabel("Approval Rate")
+plt.ylim(0, 1)
+plt.tight_layout()
+plt.show()
+```
+
+## Summary of Fairness Findings
+### Gender
+Female applicants are approved at 84.9% versus 73.0% for male applicants — an 11.9 percentage point gap. This reflects genuine risk differences: female applicants default at 7.01% versus 10.14% for males.
+
+### Education Type
+Academic degree group contains only 19 applicants — statistically unreliable. The 16.8 percentage point gap largely reflects genuine risk differences across education levels. However, education may act as a proxy for protected characteristics in some markets, warranting further review.
+
+### Family Status
+The 17.1 percentage point gap between widowed and single applicants is the largest disparity observed. This reflects real default rate differences but warrants review given family status may correlate with protected characteristics.
+
+## Discussion and Recommendations
+All three fairness dimensions show meaningful approval rate gaps ranging from 11.9 to 17.1 percentage points. These disparities are largely driven by genuine differences in observed default rates across groups rather than arbitrary model bias. However, before deployment:
+- Gender should be removed or carefully reviewed as a model feature given ECOA restrictions.
+- Education and family status should be reviewed as potential proxies for protected characteristics.
+
+
+
+# Limitations and Risks
+## Data Limitations
+- Subset training: The model was trained on a 50,000-row sample rather than the full 307,511-row dataset, with hyperparameter tuning on only 5,000 rows. Performance estimates may differ slightly from a full-data model.
+
+- Missing data: Some missing values exist across many features, particularly EXT_SOURCE_1, EXT_SOURCE_2, and EXT_SOURCE_3. Median and most-frequent imputation was used, which may introduce bias where missingness is not random.
+
+## Model Limitations
+- Predictive, not causal: The model identifies statistical relationships but does not explain why borrowers default. It should not be used to make causal claims about creditworthiness.
+
+- Low precision at chosen threshold: At the selected threshold of 0.12, precision is approximately 18%, meaning many rejected applicants would have repaid their loans if approved. This is an inherent tradeoff of operating at a low threshold in an imbalanced dataset.
+
+## Deployment Risks
+- Model drift: Economic conditions and applicant populations change over time. Without periodic retraining, model performance is expected to degrade.
+
+- Over-reliance risk: Loan officers may defer entirely to the model score. This model is a decision-support tool only and should never be the sole basis for a lending decision.
+
+## What This Model Is Missing
+The following data could meaningfully improve performance and fairness:
+
+- More recent data reflecting current economic conditions
+- Bank statement and cash flow data for direct income visibility
+- Rental and utility payment history as alternative credit indicators
+- Macroeconomic context variables such as unemployment rate and interest 
+rates at time of application
+
+
+
+# Executive Summary:
+Based on my analysis, I recommend deploying this model as a decision-support tool for loan officers reviewing consumer loan applications. The model predicts the likelihood that an applicant will default on their loan, helping lenders make smarter and more consistent decisions about who to approve. Rather than replacing human judgment, it gives loan officers a data-driven risk score they can factor into their decisions alongside other information.
+
+The model assigns each applicant a score between 0 and 1 representing their predicted probability of defaulting. I selected a decision threshold of 0.12, meaning any applicant with a predicted default probability above 12% is flagged as high risk and either rejected or escalated for manual review. I chose this threshold by testing a range of cutoffs and calculating expected profit at each one using realistic lending cost assumptions: a profit of $1,000 on a fully repaid loan, a loss of $8,000 on a defaulted loan (80% of the $10,000 principal after 20% recovery), and $0 for rejected applicants. The threshold of 0.12 maximized expected profit while maintaining an approval rate of approximately 72%, which is consistent with typical consumer lending benchmarks. At this threshold, the model is estimated to generate approximately $1,240,000 in expected profit on a 50,000-applicant sample, compared to just $460,000 if a lender simply approved everyone. That is a 2.7x improvement in profitability from screening applicants with the model versus not screening at all, a difference that adds up quickly in a real lending portfolio.
+
+The model achieves a cross-validated ROC AUC of approximately 0.74, meaning it correctly ranks a higher-risk applicant above a lower-risk one about 74% of the time. That is a meaningful improvement over random guessing (0.50) and reflects solid predictive performance for a consumer credit problem. Performance was also validated on the Kaggle leaderboard, where the model scored 0.7329 on the public set and 0.7273 on the private set. The small gap between these scores suggests the model generalizes well to applicants it has never seen before and is not simply memorizing the training data. The final model is a tuned HistGradientBoostingClassifier trained on application data merged with aggregated credit history features from external bureau tables. The three most important predictors are external credit scores (EXT_SOURCE_1, EXT_SOURCE_2, and EXT_SOURCE_3), which is consistent with what you would expect from a well-functioning credit risk model.
+
+There are a few important caveats to keep in mind before deploying this model. First, the model produces notably different approval rates across demographic groups, including an 11.9 percentage point gap by gender, 16.8 points by education level, and 17.1 points by family status. Some of this reflects genuine differences in default rates across groups, but gender in particular is a protected characteristic under the Equal Credit Opportunity Act (ECOA) and should not be used as a direct basis for credit decisions. A formal compliance review is strongly recommended before deployment. Second, this model is meant to inform decisions, not make them automatically. Loan officers should always apply their own judgment, and no application should be rejected based solely on the model score. Third, the model was trained on historical data from a specific time period and market, so performance should be monitored over time and the model periodically retrained as economic conditions change. Finally, the expected profit figures above are based on simplified lending cost assumptions, and real-world profitability will depend on actual interest rates, recovery rates, and operating costs that may shift the optimal threshold in practice.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
