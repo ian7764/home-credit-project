@@ -1,6 +1,7 @@
 # home-credit-project
 ### Ian Christiansen
 
+## Project Overview:
 My IS 6850 Home Credit Project
 This project focuses on predicting loan default risk using the Home Credit dataset, with an emphasis on turning data analysis into meaningful business insights. The data itself highlights key patterns behind default behavior, including the strong class imbalance (only about 8% of applicants default), as well as how factors like income, credit history, loan size, and past payment behavior contribute to risk differences across borrowers. By building and comparing several models and refining a gradient boosting approach, the final solution achieved a ROC AUC of around 0.73, showing a solid ability to distinguish between higher- and lower-risk borrowers despite the challenging dataset. Beyond performance, I focused on how these results would actually be used in a real lending environment by exploring decision thresholds, model explainability, and fairness considerations. Overall, this project demonstrates how data-driven insights can uncover the drivers of default risk, improve borrower segmentation, reduce potential credit losses, and support more informed and responsible lending decisions at scale.
 
